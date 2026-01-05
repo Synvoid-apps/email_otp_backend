@@ -1,36 +1,17 @@
 from flask import Flask, request, jsonify
-import random
-import time
 import smtplib
 from email.message import EmailMessage
+import random
 import os
 
 app = Flask(__name__)
 
-otp_store = {}
-
-EMAIL = os.getenv("EMAIL_ADDRESS")
+# Railway ENV variables
+SENDER_EMAIL = os.getenv("EMAIL_ADDRESS")
 APP_PASSWORD = os.getenv("EMAIL_APP_PASSWORD")
 
-OTP_EXPIRY = 60
-MAX_RESEND = 3
-
-def send_email(to, otp):
-    msg = EmailMessage()
-    msg.set_content(f"""
-Your VibeFetch OTP is: {otp}
-
-Valid for {OTP_EXPIRY} seconds.
-Do not share this OTP.
-""")
-    msg["Subject"] = "VibeFetch OTP"
-    msg["From"] = EMAIL
-    msg["To"] = to
-
-    server = smtplib.SMTP_SSL("smtp.gmail.com", 465)
-    server.login(EMAIL, APP_PASSWORD)
-    server.send_message(msg)
-    server.quit()
+# simple in-memory OTP store
+otp_store = {}
 
 @app.route("/")
 def home():
@@ -44,21 +25,26 @@ def send_otp():
     if not email:
         return jsonify({"error": "Email required"}), 400
 
-    now = time.time()
-
-    if email in otp_store:
-        if otp_store[email]["count"] >= MAX_RESEND:
-            return jsonify({"error": "Resend limit exceeded"}), 429
-        otp_store[email]["count"] += 1
-    else:
-        otp_store[email] = {"count": 1}
-
+    # generate OTP
     otp = str(random.randint(100000, 999999))
-    otp_store[email]["otp"] = otp
-    otp_store[email]["time"] = now
+    otp_store[email] = otp
 
-    send_email(email, otp)
-    return jsonify({"message": "OTP sent"})
+    try:
+        msg = EmailMessage()
+        msg.set_content(f"Your OTP is {otp}")
+        msg["Subject"] = "VibeFetch OTP"
+        msg["From"] = SENDER_EMAIL
+        msg["To"] = email
+
+        server = smtplib.SMTP_SSL("smtp.gmail.com", 465)
+        server.login(SENDER_EMAIL, APP_PASSWORD)
+        server.send_message(msg)
+        server.quit()
+
+        return jsonify({"message": "OTP sent"})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/verify-otp", methods=["POST"])
 def verify_otp():
@@ -69,16 +55,12 @@ def verify_otp():
     if email not in otp_store:
         return jsonify({"error": "OTP not found"}), 400
 
-    record = otp_store[email]
+    if otp_store[email] == otp:
+        del otp_store[email]
+        return jsonify({"message": "OTP verified"})
+    else:
+        return jsonify({"error": "Wrong OTP"}), 400
 
-    if time.time() - record["time"] > OTP_EXPIRY:
-        return jsonify({"error": "OTP expired"}), 400
-
-    if otp != record["otp"]:
-        return jsonify({"error": "Invalid OTP"}), 400
-
-    del otp_store[email]
-    return jsonify({"message": "OTP verified"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
